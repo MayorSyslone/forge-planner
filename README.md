@@ -77,6 +77,20 @@ Step 4 handles a coop properly. Give each person their own Quick Forge level and
 slot count; the finish time accounts for the fact that a maxed player's slots
 clear work faster than an unperked player's.
 
+Step 7 is the forging plan. A forge run occupies one slot for its whole
+duration — it can't be split — so working out the finish time is a scheduling
+problem, not a division. Every run is laid into a specific slot, longest first,
+each going wherever it would finish soonest, followed by a swap pass that
+shaves the busiest slot. The build is done when the last slot is done, and the
+plan shows exactly what each person should put in each of their slots.
+
+That also means a single 30-second forge takes 30 seconds no matter how many
+slots you have, which the earlier version got wrong.
+
+The plan assumes the materials are already in hand. It doesn't wait for
+Refined Mithril to come out before starting a Mithril Plate, so read it as a
+best case rather than a schedule to the minute.
+
 Step 6 has two live lists, both sortable by any column. **Buy** is everything
 you aren't forging. **Forge** is every run the forge has to do, with a "Forged
 by" column — assign a job to one person and it queues on their slots alone, at

@@ -122,12 +122,13 @@
     </div>
     <div class="split">
       <div class="card">
-        <h3 class="card-title">Selling</h3>
-        <div class="row-controls tight">
-          <label class="field grow"><span>Lowest BIN</span><input type="number" id="bin" placeholder="0" min="0"></label>
-          <label class="field"><span>AH tax %</span><input type="number" id="tax" value="2.5" min="0" max="100" step="0.1"></label>
+        <div class="card-bar">
+          <h3 class="card-title">Selling</h3>
+          <label class="field" style="min-width:96px"><span>AH tax %</span><input type="number" id="tax" value="2.5" min="0" max="100" step="0.1"></label>
         </div>
-        <div id="profitStats" class="stats"></div>
+        <p class="card-sub">What each finished item sells for. Leave blank if you're keeping it.</p>
+        <div id="sellRows"></div>
+        <div id="profitStats" class="stats" style="margin-top:10px"></div>
       </div>
       <div class="card">
         <h3 class="card-title">Timing</h3>
@@ -167,6 +168,18 @@
         <div id="queue"></div>
       </div>
     </div>
+  </section>
+
+  <!-- STEP 7 ------------------------------------------------------------- -->
+  <section class="step">
+    <div class="step-head">
+      <span class="step-n">7</span>
+      <div>
+        <h2>The forging plan</h2>
+        <p>Every slot you have between you, and what to put in each one.</p>
+      </div>
+    </div>
+    <div id="plan"></div>
   </section>
 
 </main>
