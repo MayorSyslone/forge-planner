@@ -67,11 +67,16 @@ takes a few seconds to wake up.
 
 Six steps down the page, in order.
 
-Step 2 is the important one. Every row has an arrow. **Closed** means you're
-buying that item at the price in its box. **Open** means you're forging it, so
-you pay for its ingredients instead and its forge time joins the queue. Open
-Refined Diamond and you'll be forging diamonds; leave it shut and you just buy
-them. Rows go as deep as you want — all the way down to raw Mithril if you like.
+Step 2 is the important one. Every row has an arrow, and a row is in one of
+three states:
+
+- **Bought** (plain text) — you pay the price in its box.
+- **Forged** (orange) — takes a forge slot and real time.
+- **Crafted** (blue) — a normal crafting recipe. Instant, no slot, no waiting.
+  Enchanted blocks and the gemstone tiers are all crafts.
+
+Open Refined Diamond and you'll be forging diamonds; leave it shut and you just
+buy them. Rows go as deep as you want — all the way down to raw Mithril.
 
 Step 4 handles a coop properly. Give each person their own Quick Forge level and
 slot count; the finish time accounts for the fact that a maxed player's slots
@@ -87,9 +92,10 @@ plan shows exactly what each person should put in each of their slots.
 That also means a single 30-second forge takes 30 seconds no matter how many
 slots you have, which the earlier version got wrong.
 
-The plan assumes the materials are already in hand. It doesn't wait for
-Refined Mithril to come out before starting a Mithril Plate, so read it as a
-best case rather than a schedule to the minute.
+The plan respects dependencies: a Mithril Plate can't start until its Refined
+Mithril is out of the forge, and the drill can't start until every part is
+done. Runs of the same item still go in parallel, and the scheduler reuses
+idle gaps, so a gap in one slot means it's genuinely waiting on something.
 
 Step 6 has two live lists, both sortable by any column. **Buy** is everything
 you aren't forging. **Forge** is every run the forge has to do, with a "Forged

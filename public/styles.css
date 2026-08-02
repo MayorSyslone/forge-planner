@@ -14,6 +14,7 @@
   --ember:#f08a3c;
   --ember-dim:rgba(240,138,60,.14);
   --mithril:#5fd3c0;
+  --craft:#69a0f0;
   --gold:#e0bb63;
   --good:#7fcb8c;
   --bad:#e6706a;
@@ -238,33 +239,59 @@ select.who:hover{border-color:var(--line);color:var(--text)}
 .plan-bar .k{display:block;font-family:var(--mono);font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim)}
 .plan-bar .v{font-family:var(--mono);font-size:15px}
 .plan-bar .v.ember{color:var(--ember)}
-.plan-card{margin-bottom:12px}
-.plan-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+.slots-card{margin-top:12px}
+
+.axis{position:relative;height:15px;margin:6px 0 9px 168px;border-bottom:1px solid var(--line-soft)}
+.axis span{
+  position:absolute;top:0;transform:translateX(-50%);white-space:nowrap;
+  font-family:var(--mono);font-size:9.5px;color:var(--dim);
+}
+.axis span:first-child{transform:none}
+.axis span:last-child{transform:translateX(-100%)}
+
+.timeline{position:relative;height:17px;background:var(--bg-2);border-radius:3px;overflow:hidden}
+.timeline i{
+  position:absolute;top:0;bottom:0;border-radius:2px;
+  box-shadow:inset 0 0 0 1px rgba(0,0,0,.45);
+  display:flex;align-items:center;overflow:hidden;
+}
+.timeline i b{
+  font-weight:500;font-size:9.5px;color:rgba(0,0,0,.78);
+  padding:0 5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.timeline.hot{box-shadow:0 0 0 1px rgba(240,138,60,.5)}
+
+.span-row,.slot-row{display:grid;grid-template-columns:160px 1fr 74px;gap:8px;align-items:center;padding:3px 0}
+.span-name{font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:flex;align-items:center;gap:6px}
+.span-name b{color:var(--dim);font-weight:400;font-family:var(--mono);font-size:10.5px}
+.swatch{width:8px;height:8px;border-radius:2px;flex:0 0 8px}
+.span-time,.slot-time{text-align:right;font-family:var(--mono);font-size:11.5px;color:var(--muted)}
+
+.player-group{border-top:1px solid var(--line);padding:11px 0 9px}
+.player-group:first-of-type{border-top:none;padding-top:4px}
+.player-group:last-of-type{padding-bottom:0}
+.plan-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px}
+.plan-head h4{margin:0;font-size:13.5px;font-weight:650}
 .chip{
   font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:20px;
   background:var(--card-2);color:var(--muted);border:1px solid var(--line-soft);
 }
 .chip.cut{background:rgba(95,211,192,.12);color:var(--mithril);border-color:rgba(95,211,192,.28)}
 .chip.cole{background:rgba(240,138,60,.13);color:var(--ember);border-color:rgba(240,138,60,.3)}
-.slot{
-  display:grid;grid-template-columns:64px 1fr 78px;grid-template-areas:"n items time" ". bar bar";
-  gap:5px 10px;align-items:center;padding:7px 0;border-top:1px solid var(--line-soft);
-}
-.slot:first-of-type{border-top:none}
-.slot-n{grid-area:n;font-family:var(--mono);font-size:11px;color:var(--dim)}
-.slot-items{grid-area:items;display:flex;gap:5px;flex-wrap:wrap}
-.slot-time{grid-area:time;text-align:right;font-family:var(--mono);font-size:12.5px;color:var(--muted)}
-.slot-bar{grid-area:bar;height:3px;background:var(--line-soft);border-radius:2px;overflow:hidden}
-.slot-bar i{display:block;height:100%;background:var(--mithril);border-radius:2px}
-.slot.hot .slot-bar i{background:var(--ember)}
-.slot.hot .slot-n,.slot.hot .slot-time{color:var(--ember)}
-.job{
-  font-size:11.5px;padding:2px 8px;border-radius:5px;
-  background:var(--card-2);border:1px solid var(--line-soft);color:var(--text);
-}
-.job b{color:var(--dim);font-weight:400;margin-left:5px;font-family:var(--mono);font-size:10.5px}
-.idle{font-size:11.5px;color:var(--dim);font-style:italic}
+.slot-n{font-family:var(--mono);font-size:11px;color:var(--dim);padding-left:8px}
+.slot-row.hot .slot-n,.slot-row.hot .slot-time{color:var(--ember)}
 .warn{
   border-left:2px solid var(--bad);padding:3px 0 3px 10px;color:var(--muted);
   font-size:12.5px;margin:0 0 11px;
+}
+
+/* crafted rows read as a third kind of thing, next to bought and forged */
+.trow.crafting .tlabel{color:var(--craft)}
+.chev.on.craft{background:rgba(105,160,240,.16);border-color:var(--craft);color:var(--craft)}
+.dot.craft{background:var(--craft)}
+
+@media (max-width:720px){
+  .axis{margin-left:96px}
+  .span-row,.slot-row{grid-template-columns:92px 1fr 60px}
+  .span-name{font-size:11px}
 }

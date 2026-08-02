@@ -60,28 +60,38 @@ const forgeTime = item =>
 /* -------------------------------------------------------------- the model */
 /* One pass down the tree gives cost, forge time and the shopping list.
    A closed row is something you buy, so the walk stops there. */
-function walk(item, qty, path, acc) {
+function walk(item, qty, path, acc, parentForge = null) {
   const r = RECIPES[item];
   if (!r || !state.open.has(path)) {
     acc.buy[item] = (acc.buy[item] || 0) + qty;
     return;
   }
   const runs = Math.ceil(qty / (r.out || 1));
-  if (!r.craft) {
+  let nextParent = parentForge;
+
+  if (r.craft) {
+    acc.crafted[item] = (acc.crafted[item] || 0) + runs;
+  } else {
     acc.forgeSeconds += runs * forgeTime(item);
     acc.processes += runs;
     acc.used.add(item);
     acc.runsPer[item] = (acc.runsPer[item] || 0) + runs;
+    /* whatever forge job sits above this one has to wait for it */
+    if (parentForge) (acc.deps[parentForge] ||= new Set()).add(item);
+    acc.deps[item] ||= new Set();
+    nextParent = item;
   }
+
   if (r.coins) acc.coins += runs * r.coins;
-  for (const [ing, n] of r.ing) walk(ing, runs * n, path + "|" + ing, acc);
+  for (const [ing, n] of r.ing) walk(ing, runs * n, path + "|" + ing, acc, nextParent);
 }
 
-const blank = () => ({ buy: {}, forgeSeconds: 0, processes: 0, coins: 0, used: new Set(), runsPer: {} });
+const blank = () => ({ buy: {}, forgeSeconds: 0, processes: 0, coins: 0,
+  used: new Set(), runsPer: {}, crafted: {}, deps: {} });
 
 function compute() {
   const acc = blank();
-  state.build.forEach((b, i) => walk(b.item, b.qty, "#" + i, acc));
+  state.build.forEach((b, i) => walk(b.item, b.qty, "#" + i, acc, null));
   let materials = 0, missing = 0;
   for (const [item, q] of Object.entries(acc.buy)) {
     const p = state.prices[item];
@@ -144,81 +154,96 @@ function slotList() {
   for (const p of state.players) {
     const red = reduction(p.qf || 0);
     for (let i = 0; i < (p.slots || 0); i++)
-      out.push({ key: p.id + "#" + i, player: p, red, n: i + 1, end: 0, tally: {} });
+      out.push({ key: p.id + "#" + i, player: p, red, n: i + 1, intervals: [], end: 0, tally: {} });
   }
   return out;
 }
 
+/* Earliest moment this slot could start a job of length d, no sooner than
+   `est`, without clashing with what's already booked. Gaps get reused. */
+function earliestFit(slot, est, d) {
+  let t = est;
+  for (const iv of slot.intervals) {
+    if (t + d <= iv.start + 1e-9) return t;
+    if (iv.end > t) t = iv.end;
+  }
+  return t;
+}
+
+function book(slot, item, start, d) {
+  const iv = { item, start, end: start + d };
+  const at = slot.intervals.findIndex(x => x.start > start);
+  if (at === -1) slot.intervals.push(iv); else slot.intervals.splice(at, 0, iv);
+  slot.end = Math.max(slot.end, iv.end);
+  slot.tally[item] = (slot.tally[item] || 0) + 1;
+  return iv;
+}
+
+/* A forge run holds one slot for its whole duration, and it can't begin until
+   the parts it consumes have come out of the forge. So the plan is a
+   precedence-constrained schedule: work out the order things unlock in, then
+   for each job pick the slot and moment that finishes it soonest. */
 function buildPlan() {
   const slots = slotList();
-  const rows = queueRows();
-  const base = {};
-  const jobs = [];
-  let truncated = false;
+  const acc = compute();
+  const runsPer = acc.runsPer;
+  const items = Object.keys(runsPer);
 
-  for (const r of rows) {
-    base[r.item] = r.each;
-    for (let i = 0; i < r.runs; i++) {
-      if (jobs.length >= MAX_JOBS) { truncated = true; break; }
-      jobs.push({ item: r.item, base: r.each, owner: r.owner ? r.owner.id : null });
+  if (!slots.length || !items.length)
+    return { slots, makespan: items.length ? Infinity : 0, spans: [], truncated: false, unplaceable: [], base: {} };
+
+  const base = {};
+  for (const item of items) base[item] = forgeTime(item);
+
+  /* how deep in the dependency chain each item sits — children first */
+  const depth = {};
+  const measure = (item, seen = new Set()) => {
+    if (depth[item] != null) return depth[item];
+    if (seen.has(item)) return 0;                    // guard, shouldn't happen
+    seen.add(item);
+    let d = 0;
+    for (const child of acc.deps[item] || []) d = Math.max(d, measure(child, seen) + 1);
+    return (depth[item] = d);
+  };
+  items.forEach(i => measure(i));
+
+  const order = items.slice().sort((a, b) =>
+    depth[a] - depth[b] || (runsPer[b] * base[b]) - (runsPer[a] * base[a]));
+
+  const done = {};            // item -> when its last run finishes
+  const spans = [];
+  const unplaceable = new Set();
+  let scheduled = 0, truncated = false;
+
+  for (const item of order) {
+    const ready = [...(acc.deps[item] || [])].reduce((t, child) => Math.max(t, done[child] || 0), 0);
+    const owner = state.assign[item];
+    const pool = owner == null ? slots : slots.filter(s2 => s2.player.id === owner);
+
+    if (!pool.length) { unplaceable.add(item); done[item] = ready; continue; }
+
+    let first = Infinity, last = ready;
+    for (let k = 0; k < runsPer[item]; k++) {
+      if (scheduled >= MAX_JOBS) { truncated = true; break; }
+      let best = null, bestStart = 0, bestEnd = Infinity;
+      for (const slot of pool) {
+        const d = base[item] * (1 - slot.red);
+        const t = earliestFit(slot, ready, d);
+        if (t + d < bestEnd - 1e-9) { best = slot; bestStart = t; bestEnd = t + d; }
+      }
+      book(best, item, bestStart, bestEnd - bestStart);
+      first = Math.min(first, bestStart);
+      last = Math.max(last, bestEnd);
+      scheduled++;
     }
+    done[item] = last;
+    spans.push({ item, runs: runsPer[item], start: isFinite(first) ? first : ready, end: last, depth: depth[item] });
     if (truncated) break;
   }
 
-  if (!slots.length || !jobs.length)
-    return { slots, makespan: jobs.length ? Infinity : 0, truncated, unplaceable: [] };
-
-  jobs.sort((a, b) => b.base - a.base);
-
-  const unplaceable = new Set();
-  for (const job of jobs) {
-    const pool = job.owner == null ? slots : slots.filter(s => s.player.id === job.owner);
-    if (!pool.length) { unplaceable.add(job.item); continue; }
-    let best = null, bestEnd = Infinity;
-    for (const s of pool) {
-      const finish = s.end + job.base * (1 - s.red);
-      /* tie-break onto the faster slot, it'll help later jobs */
-      if (finish < bestEnd - 1e-9 || (Math.abs(finish - bestEnd) < 1e-9 && best && s.red > best.red)) {
-        best = s; bestEnd = finish;
-      }
-    }
-    best.end = bestEnd;
-    best.tally[job.item] = (best.tally[job.item] || 0) + 1;
-  }
-
-  /* Shave the bottleneck: try moving one run off the busiest slot somewhere
-     it would land sooner. Repeat while it keeps helping. */
-  for (let pass = 0; pass < 400; pass++) {
-    let hot = slots[0];
-    for (const s of slots) if (s.end > hot.end) hot = s;
-    const makespan = hot.end;
-    let moved = false;
-
-    for (const item of Object.keys(hot.tally)) {
-      const owner = state.assign[item];
-      if (owner != null && owner !== hot.player.id) continue;
-      const b = base[item];
-      const without = hot.end - b * (1 - hot.red);
-      for (const s of slots) {
-        if (s === hot) continue;
-        if (owner != null && s.player.id !== owner) continue;
-        const landed = s.end + b * (1 - s.red);
-        if (landed < makespan - 1e-9 && without < makespan - 1e-9) {
-          hot.end = without;
-          if (--hot.tally[item] === 0) delete hot.tally[item];
-          s.end = landed;
-          s.tally[item] = (s.tally[item] || 0) + 1;
-          moved = true;
-          break;
-        }
-      }
-      if (moved) break;
-    }
-    if (!moved) break;
-  }
-
-  const makespan = slots.reduce((m, s) => Math.max(m, s.end), 0);
-  return { slots, makespan, truncated, unplaceable: [...unplaceable], base };
+  const makespan = slots.reduce((m, s2) => Math.max(m, s2.end), 0);
+  spans.sort((a, b) => a.start - b.start || a.end - b.end);
+  return { slots, makespan, spans, truncated, unplaceable: [...unplaceable], base };
 }
 
 const finishTime = () => buildPlan().makespan;
@@ -298,7 +323,7 @@ function buildRow(item, qty, path, depth, rootIdx) {
   const r = RECIPES[item];
   const open = state.open.has(path);
 
-  const row = el("div", "trow " + (open ? "forging" : r ? "buying" : "leaf"));
+  const row = el("div", "trow " + (open ? (r.craft ? "crafting" : "forging") : r ? "buying" : "leaf"));
   if (!depth) row.classList.add("root");
   row.dataset.path = path;
   row.dataset.item = item;
@@ -312,11 +337,12 @@ function buildRow(item, qty, path, depth, rootIdx) {
   }
   const chev = el("button");
   if (r) {
-    chev.className = "chev" + (open ? " on" : "");
+    chev.className = "chev" + (open ? (r.craft ? " on craft" : " on") : "");
     chev.textContent = open ? "▼" : "▶";
     chev.setAttribute("aria-expanded", String(open));
     chev.title = open
-      ? "Forging this from its parts. Close to buy it instead."
+      ? (r.craft ? "Crafting this yourself — instant, no forge slot. Close to buy it instead."
+                 : "Forging this from its parts. Close to buy it instead.")
       : r.craft ? "Craft this from raw materials instead of buying it"
                 : "Forge this yourself instead of buying it";
     chev.addEventListener("click", () => {
@@ -357,7 +383,7 @@ function buildRow(item, qty, path, depth, rootIdx) {
   /* price each */
   if (open) {
     const fixed = el("div", "pcell");
-    fixed.innerHTML = '<div class="fixed">from parts</div>';
+    fixed.innerHTML = `<div class="fixed">${r.craft ? "crafted" : "forged"}</div>`;
     row.appendChild(fixed);
   } else {
     row.appendChild(priceCell(item));
@@ -777,6 +803,46 @@ function renderStats() {
 }
 const score = (k, v, cls) => `<div class="score"><span class="k">${k}</span><span class="v ${cls}">${v}</span></div>`;
 
+/* A stable colour per item so the same job looks the same in every slot. */
+function itemHue(item) {
+  let h = 0;
+  for (let i = 0; i < item.length; i++) h = (h * 31 + item.charCodeAt(i)) % 360;
+  return h;
+}
+const itemColour = item => `hsl(${itemHue(item)} 62% 55%)`;
+
+function timeAxis(makespan) {
+  const axis = el("div", "axis");
+  const steps = 5;
+  for (let i = 0; i <= steps; i++) {
+    const tick = el("span");
+    tick.style.left = (i / steps) * 100 + "%";
+    tick.textContent = i === 0 ? "start" : dur((makespan * i) / steps);
+    axis.appendChild(tick);
+  }
+  return axis;
+}
+
+/* One bar of coloured segments, positioned against the whole build's length. */
+function timeline(intervals, makespan, opts = {}) {
+  const bar = el("div", "timeline" + (opts.hot ? " hot" : ""));
+  for (const iv of intervals) {
+    const seg = el("i");
+    const width = ((iv.end - iv.start) / makespan) * 100;
+    seg.style.left = (iv.start / makespan) * 100 + "%";
+    seg.style.width = Math.max(width, 0.35) + "%";
+    seg.style.background = itemColour(iv.item);
+    seg.title = `${iv.item} — ${dur(iv.start)} to ${dur(iv.end)} (${dur(iv.end - iv.start)})`;
+    if (width > 11) {
+      const tag = el("b");
+      tag.textContent = iv.item;
+      seg.appendChild(tag);
+    }
+    bar.appendChild(seg);
+  }
+  return bar;
+}
+
 function renderPlan() {
   const host = $("plan");
   host.innerHTML = "";
@@ -793,96 +859,87 @@ function renderPlan() {
 
   const hottest = plan.slots.reduce((m, s2) => (s2.end > m.end ? s2 : m), plan.slots[0]);
 
-  const bar = document.createElement("div");
-  bar.className = "plan-bar";
+  const bar = el("div", "plan-bar");
   bar.innerHTML =
     `<div><span class="k">Finishes in</span><span class="v ember">${dur(plan.makespan)}</span></div>` +
     `<div><span class="k">That's</span><span class="v">${(plan.makespan / 86400).toFixed(2)} days</span></div>` +
     `<div><span class="k">Slots working</span><span class="v">${plan.slots.filter(s2 => s2.end > 0).length} of ${plan.slots.length}</span></div>` +
-    `<div><span class="k">Held up by</span><span class="v">${hottest.player.name || "someone"}, slot ${hottest.n}</span></div>`;
+    `<div><span class="k">Last slot to finish</span><span class="v">${hottest.player.name || "someone"}, slot ${hottest.n}</span></div>`;
   host.appendChild(bar);
 
-  if (plan.unplaceable.length) {
-    const warn = document.createElement("p");
-    warn.className = "warn";
-    warn.textContent = `Assigned to someone with no slots: ${plan.unplaceable.join(", ")}. Give them slots in step 4 or set those back to Anyone.`;
-    host.appendChild(warn);
+  for (const [cls, text] of [
+    ["warn", plan.unplaceable.length ? `Assigned to someone with no slots: ${plan.unplaceable.join(", ")}. Give them slots in step 4, or set those back to Anyone.` : ""],
+    ["warn", plan.truncated ? "More than 20,000 forge runs — the plan below covers as many as it could fit." : ""],
+  ]) if (text) { const w = el("p", cls); w.textContent = text; host.appendChild(w); }
+
+  /* ---- the whole build, one row per item, in the order things unlock ---- */
+  const overview = el("div", "card");
+  const oh = el("h3", "card-title");
+  oh.textContent = "What unlocks when";
+  overview.appendChild(oh);
+  const osub = el("p", "card-sub");
+  osub.textContent = "Nothing here can start until the parts above it are out of the forge.";
+  overview.appendChild(osub);
+  overview.appendChild(timeAxis(plan.makespan));
+
+  for (const span of plan.spans) {
+    const row = el("div", "span-row");
+    const name = el("div", "span-name");
+    name.innerHTML = `<i class="swatch" style="background:${itemColour(span.item)}"></i>${span.item}<b>\u00d7${fmt(span.runs)}</b>`;
+    row.appendChild(name);
+    const tl = timeline([{ item: span.item, start: span.start, end: span.end }], plan.makespan);
+    tl.firstChild.title = `${span.item} — ${span.start < 1 ? "starts immediately" : "starts at " + dur(span.start)}, done by ${dur(span.end)}`;
+    row.appendChild(tl);
+    const when = el("div", "span-time");
+    when.textContent = dur(span.end);
+    row.appendChild(when);
+    overview.appendChild(row);
   }
-  if (plan.truncated) {
-    const warn = document.createElement("p");
-    warn.className = "warn";
-    warn.textContent = "That's more than 20,000 forge runs — the plan below covers the longest ones only.";
-    host.appendChild(warn);
-  }
+  host.appendChild(overview);
+
+  /* ---- every slot you have between you ---- */
+  const board = el("div", "card slots-card");
+  const bh = el("h3", "card-title");
+  bh.textContent = "Slot by slot";
+  board.appendChild(bh);
+  const bsub = el("p", "card-sub");
+  bsub.textContent = "Hover any block to see the item and when it runs. Gaps are the forge waiting on parts.";
+  board.appendChild(bsub);
+  board.appendChild(timeAxis(plan.makespan));
 
   for (const p2 of state.players) {
     const mine = plan.slots.filter(s2 => s2.player.id === p2.id);
     if (!mine.length) continue;
 
-    const card = document.createElement("div");
-    card.className = "card plan-card";
-
-    const head = document.createElement("div");
-    head.className = "plan-head";
+    const group = el("div", "player-group");
+    const head = el("div", "plan-head");
     const cut = Math.round(reduction(p2.qf || 0) * 100);
     head.innerHTML =
-      `<h3 class="card-title">${p2.name || "unnamed"}</h3>` +
+      `<h4>${p2.name || "unnamed"}</h4>` +
       `<span class="chip">${p2.qf ? "Quick Forge " + p2.qf : "no Quick Forge"}</span>` +
       (state.cole ? '<span class="chip cole">Cole +25%</span>' : "") +
       `<span class="chip cut">${cut}% faster</span>` +
       `<span class="chip">${mine.length} slot${mine.length === 1 ? "" : "s"}</span>`;
-    card.appendChild(head);
+    group.appendChild(head);
 
     for (const slot of mine) {
-      const row = document.createElement("div");
-      row.className = "slot" + (slot === hottest ? " hot" : "");
-
-      const tag = document.createElement("div");
-      tag.className = "slot-n";
+      const row = el("div", "slot-row" + (slot === hottest ? " hot" : ""));
+      const tag = el("div", "slot-n");
       tag.textContent = "Slot " + slot.n;
       row.appendChild(tag);
-
-      const items = document.createElement("div");
-      items.className = "slot-items";
-      const entries = Object.entries(slot.tally)
-        .sort((a, b) => (plan.base[b[0]] * b[1]) - (plan.base[a[0]] * a[1]));
-      if (!entries.length) {
-        const idle = document.createElement("span");
-        idle.className = "idle";
-        idle.textContent = "nothing — spare capacity";
-        items.appendChild(idle);
-      } else {
-        for (const [item, count] of entries) {
-          const chip = document.createElement("span");
-          chip.className = "job";
-          chip.innerHTML = `${item}<b>\u00d7${count}</b>`;
-          chip.title = `${count} run${count === 1 ? "" : "s"} at ${dur(plan.base[item] * (1 - slot.red))} each here`;
-          items.appendChild(chip);
-        }
-      }
-      row.appendChild(items);
-
-      const time = document.createElement("div");
-      time.className = "slot-time";
-      time.textContent = slot.end ? dur(slot.end) : "—";
+      row.appendChild(timeline(slot.intervals, plan.makespan, { hot: slot === hottest }));
+      const time = el("div", "slot-time");
+      time.textContent = slot.end ? dur(slot.end) : "idle";
       row.appendChild(time);
-
-      const track = document.createElement("div");
-      track.className = "slot-bar";
-      const fill = document.createElement("i");
-      fill.style.width = (plan.makespan ? (slot.end / plan.makespan) * 100 : 0) + "%";
-      track.appendChild(fill);
-      row.appendChild(track);
-
-      card.appendChild(row);
+      group.appendChild(row);
     }
-    host.appendChild(card);
+    board.appendChild(group);
   }
+  host.appendChild(board);
 
-  const note = document.createElement("p");
-  note.className = "card-sub";
+  const note = el("p", "card-sub");
   note.style.marginTop = "10px";
-  note.textContent = "Runs are placed longest-first into whichever slot frees up soonest, then swapped around to shorten the busiest one. It assumes you have the materials ready, so treat it as the best case.";
+  note.textContent = "Each run holds one slot for its whole length and can't start before the parts it eats are finished. Runs of the same item still go in parallel, so a gap in one slot usually means it's waiting on something else.";
   host.appendChild(note);
 }
 
