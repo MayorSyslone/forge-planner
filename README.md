@@ -89,6 +89,12 @@ each going wherever it would finish soonest, followed by a swap pass that
 shaves the busiest slot. The build is done when the last slot is done, and the
 plan shows exactly what each person should put in each of their slots.
 
+Both charts scroll sideways and zoom from 1x (whole build on screen) up to 64x.
+Item names and slot labels stay pinned while the bars slide. Pointing anywhere
+on the slot chart reads out that moment: which slots are mid-forge and how long
+they have left, and what has finished and is sitting in your inventory. Click
+to pin the readout, click again to release.
+
 That also means a single 30-second forge takes 30 seconds no matter how many
 slots you have, which the earlier version got wrong.
 

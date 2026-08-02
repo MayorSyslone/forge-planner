@@ -20,7 +20,11 @@ const state = {
   sortBuy: { key: "total", dir: -1 },
   sortForge: { key: "real", dir: -1 },
   autoPrice: true,
+  zoom: 1,
 };
+let scrubAt = null;        // seconds into the build, or null when not hovering
+let scrubLocked = false;
+let lastPlan = null;
 let nextPlayerId = 2;
 
 const $ = id => document.getElementById(id);
@@ -77,7 +81,10 @@ function walk(item, qty, path, acc, parentForge = null) {
     acc.used.add(item);
     acc.runsPer[item] = (acc.runsPer[item] || 0) + runs;
     /* whatever forge job sits above this one has to wait for it */
-    if (parentForge) (acc.deps[parentForge] ||= new Set()).add(item);
+    if (parentForge) {
+      (acc.deps[parentForge] ||= new Set()).add(item);
+      (acc.needs[parentForge] ||= {})[item] = ((acc.needs[parentForge] || {})[item] || 0) + qty;
+    }
     acc.deps[item] ||= new Set();
     nextParent = item;
   }
@@ -87,7 +94,7 @@ function walk(item, qty, path, acc, parentForge = null) {
 }
 
 const blank = () => ({ buy: {}, forgeSeconds: 0, processes: 0, coins: 0,
-  used: new Set(), runsPer: {}, crafted: {}, deps: {} });
+  used: new Set(), runsPer: {}, crafted: {}, deps: {}, needs: {} });
 
 function compute() {
   const acc = blank();
@@ -803,6 +810,81 @@ function renderStats() {
 }
 const score = (k, v, cls) => `<div class="score"><span class="k">${k}</span><span class="v ${cls}">${v}</span></div>`;
 
+/* What you'd be holding, and what's mid-forge, at a given moment. */
+function snapshotAt(plan, t) {
+  const acc = compute();
+  const produced = {}, started = {}, busy = [];
+  for (const slot of plan.slots) {
+    for (const iv of slot.intervals) {
+      if (iv.end <= t + 1e-6) produced[iv.item] = (produced[iv.item] || 0) + (RECIPES[iv.item].out || 1);
+      if (iv.start <= t + 1e-6) started[iv.item] = (started[iv.item] || 0) + 1;
+      if (iv.start <= t && t < iv.end) busy.push({ slot, iv, left: iv.end - t });
+    }
+  }
+  /* a run takes its ingredients the moment it starts */
+  const consumed = {};
+  for (const [parent, parts] of Object.entries(acc.needs || {})) {
+    const totalRuns = acc.runsPer[parent];
+    if (!totalRuns) continue;
+    const ran = started[parent] || 0;
+    for (const [part, qty] of Object.entries(parts))
+      consumed[part] = (consumed[part] || 0) + (qty / totalRuns) * ran;
+  }
+  const held = [];
+  for (const item of new Set([...Object.keys(produced), ...Object.keys(consumed)])) {
+    const n = (produced[item] || 0) - (consumed[item] || 0);
+    if (n > 0.004) held.push({ item, n });
+  }
+  held.sort((a, b) => b.n - a.n || a.item.localeCompare(b.item));
+  busy.sort((a, b) => a.left - b.left);
+  return { held, busy };
+}
+
+function renderScrub() {
+  const board = $("plan").querySelector(".slots-card");
+  if (!board || !lastPlan) return;
+  const head = board.querySelector(".playhead");
+  const out = $("scrubOut");
+  if (!head || !out) return;
+
+  if (scrubAt == null) {
+    head.style.display = "none";
+    out.innerHTML = '<span class="hint">Point at the slot chart to see where things stand at that moment. Click to pin it.</span>';
+    return;
+  }
+
+  const anyBar = board.querySelector(".timeline");
+  const track = board.querySelector(".track");
+  if (!anyBar || !track) return;
+  const barBox = anyBar.getBoundingClientRect();
+  const trackBox = track.getBoundingClientRect();
+  const frac = scrubAt / lastPlan.makespan;
+  head.style.display = "block";
+  head.style.left = (barBox.left - trackBox.left + frac * barBox.width) + "px";
+
+  const { held, busy } = snapshotAt(lastPlan, scrubAt);
+  out.innerHTML =
+    `<div class="scrub-head"><span class="at">${dur(scrubAt)} in</span>` +
+    `<span class="pin">${scrubLocked ? "pinned — click again to release" : "click to pin"}</span></div>` +
+    `<div class="scrub-cols">
+       <div>
+         <span class="eyebrow">In the forge (${busy.length})</span>
+         ${busy.length ? busy.map(b =>
+            `<div class="scrub-line"><i class="swatch" style="background:${itemColour(b.iv.item)}"></i>` +
+            `<span>${b.iv.item}</span><b>${b.slot.player.name || "?"} slot ${b.slot.n}</b>` +
+            `<em>${dur(b.left)} left</em></div>`).join("")
+          : '<div class="scrub-line empty">every slot idle</div>'}
+       </div>
+       <div>
+         <span class="eyebrow">Sitting in your inventory (${held.length})</span>
+         ${held.length ? held.map(h =>
+            `<div class="scrub-line"><i class="swatch" style="background:${itemColour(h.item)}"></i>` +
+            `<span>${h.item}</span><em>${fmt(h.n)}</em></div>`).join("")
+          : '<div class="scrub-line empty">nothing finished yet</div>'}
+       </div>
+     </div>`;
+}
+
 /* A stable colour per item so the same job looks the same in every slot. */
 function itemHue(item) {
   let h = 0;
@@ -813,13 +895,17 @@ const itemColour = item => `hsl(${itemHue(item)} 62% 55%)`;
 
 function timeAxis(makespan) {
   const axis = el("div", "axis");
-  const steps = 5;
+  const inner = el("div", "axis-in");
+  const steps = Math.min(12, Math.max(4, Math.round(4 * state.zoom)));
   for (let i = 0; i <= steps; i++) {
     const tick = el("span");
     tick.style.left = (i / steps) * 100 + "%";
     tick.textContent = i === 0 ? "start" : dur((makespan * i) / steps);
-    axis.appendChild(tick);
+    inner.appendChild(tick);
   }
+  axis.appendChild(el("div"));
+  axis.appendChild(inner);
+  axis.appendChild(el("div"));
   return axis;
 }
 
@@ -830,10 +916,10 @@ function timeline(intervals, makespan, opts = {}) {
     const seg = el("i");
     const width = ((iv.end - iv.start) / makespan) * 100;
     seg.style.left = (iv.start / makespan) * 100 + "%";
-    seg.style.width = Math.max(width, 0.35) + "%";
+    seg.style.width = Math.max(width, 0.2) + "%";
     seg.style.background = itemColour(iv.item);
-    seg.title = `${iv.item} — ${dur(iv.start)} to ${dur(iv.end)} (${dur(iv.end - iv.start)})`;
-    if (width > 11) {
+    seg.title = `${iv.item} — ${iv.start < 1 ? "from the start" : dur(iv.start)} to ${dur(iv.end)} (${dur(iv.end - iv.start)})`;
+    if (width * state.zoom > 9) {
       const tag = el("b");
       tag.textContent = iv.item;
       seg.appendChild(tag);
@@ -843,10 +929,47 @@ function timeline(intervals, makespan, opts = {}) {
   return bar;
 }
 
+function scroller(makespan) {
+  const wrap = el("div", "scroller");
+  const track = el("div", "track");
+  track.style.width = (state.zoom * 100) + "%";
+  track.appendChild(timeAxis(makespan));
+  wrap.appendChild(track);
+  return { wrap, track };
+}
+
+function zoomBar() {
+  const bar = el("div", "zoombar");
+  const label = el("span", "zlabel");
+  label.textContent = state.zoom.toFixed(state.zoom < 10 ? 1 : 0) + "\u00d7";
+
+  const set = z => {
+    state.zoom = Math.min(64, Math.max(1, z));
+    save();
+    renderPlan();
+  };
+  const mk = (text, title, fn) => {
+    const b = el("button", "zbtn");
+    b.textContent = text; b.title = title;
+    b.addEventListener("click", fn);
+    return b;
+  };
+  bar.append(
+    el("span", "zoom-eyebrow"),
+    mk("\u2212", "Zoom out", () => set(state.zoom / 2)),
+    label,
+    mk("+", "Zoom in", () => set(state.zoom * 2)),
+    mk("fit", "Back to the whole build", () => set(1)),
+  );
+  bar.firstChild.textContent = "Zoom";
+  return bar;
+}
+
 function renderPlan() {
   const host = $("plan");
   host.innerHTML = "";
   const plan = buildPlan();
+  lastPlan = plan;
 
   if (!plan.slots.length) {
     host.innerHTML = '<div class="card"><div class="blank">Nobody has any slots. Add a player in step 4.</div></div>';
@@ -860,17 +983,20 @@ function renderPlan() {
   const hottest = plan.slots.reduce((m, s2) => (s2.end > m.end ? s2 : m), plan.slots[0]);
 
   const bar = el("div", "plan-bar");
-  bar.innerHTML =
+  const facts = el("div", "plan-facts");
+  facts.innerHTML =
     `<div><span class="k">Finishes in</span><span class="v ember">${dur(plan.makespan)}</span></div>` +
     `<div><span class="k">That's</span><span class="v">${(plan.makespan / 86400).toFixed(2)} days</span></div>` +
     `<div><span class="k">Slots working</span><span class="v">${plan.slots.filter(s2 => s2.end > 0).length} of ${plan.slots.length}</span></div>` +
-    `<div><span class="k">Last slot to finish</span><span class="v">${hottest.player.name || "someone"}, slot ${hottest.n}</span></div>`;
+    `<div><span class="k">Last to finish</span><span class="v">${hottest.player.name || "someone"}, slot ${hottest.n}</span></div>`;
+  bar.appendChild(facts);
+  bar.appendChild(zoomBar());
   host.appendChild(bar);
 
-  for (const [cls, text] of [
-    ["warn", plan.unplaceable.length ? `Assigned to someone with no slots: ${plan.unplaceable.join(", ")}. Give them slots in step 4, or set those back to Anyone.` : ""],
-    ["warn", plan.truncated ? "More than 20,000 forge runs — the plan below covers as many as it could fit." : ""],
-  ]) if (text) { const w = el("p", cls); w.textContent = text; host.appendChild(w); }
+  for (const text of [
+    plan.unplaceable.length ? `Assigned to someone with no slots: ${plan.unplaceable.join(", ")}. Give them slots in step 4, or set those back to Anyone.` : "",
+    plan.truncated ? "More than 20,000 forge runs — the plan below covers as many as it could fit." : "",
+  ]) if (text) { const w = el("p", "warn"); w.textContent = text; host.appendChild(w); }
 
   /* ---- the whole build, one row per item, in the order things unlock ---- */
   const overview = el("div", "card");
@@ -880,21 +1006,21 @@ function renderPlan() {
   const osub = el("p", "card-sub");
   osub.textContent = "Nothing here can start until the parts above it are out of the forge.";
   overview.appendChild(osub);
-  overview.appendChild(timeAxis(plan.makespan));
 
+  const ov = scroller(plan.makespan);
   for (const span of plan.spans) {
     const row = el("div", "span-row");
     const name = el("div", "span-name");
-    name.innerHTML = `<i class="swatch" style="background:${itemColour(span.item)}"></i>${span.item}<b>\u00d7${fmt(span.runs)}</b>`;
+    name.innerHTML = `<i class="swatch" style="background:${itemColour(span.item)}"></i>` +
+                     `<span class="nm">${span.item}</span><b>\u00d7${fmt(span.runs)}</b>`;
     row.appendChild(name);
-    const tl = timeline([{ item: span.item, start: span.start, end: span.end }], plan.makespan);
-    tl.firstChild.title = `${span.item} — ${span.start < 1 ? "starts immediately" : "starts at " + dur(span.start)}, done by ${dur(span.end)}`;
-    row.appendChild(tl);
+    row.appendChild(timeline([{ item: span.item, start: span.start, end: span.end }], plan.makespan));
     const when = el("div", "span-time");
     when.textContent = dur(span.end);
     row.appendChild(when);
-    overview.appendChild(row);
+    ov.track.appendChild(row);
   }
+  overview.appendChild(ov.wrap);
   host.appendChild(overview);
 
   /* ---- every slot you have between you ---- */
@@ -903,24 +1029,28 @@ function renderPlan() {
   bh.textContent = "Slot by slot";
   board.appendChild(bh);
   const bsub = el("p", "card-sub");
-  bsub.textContent = "Hover any block to see the item and when it runs. Gaps are the forge waiting on parts.";
+  bsub.textContent = "Gaps are the forge waiting on parts. Point anywhere to read that moment.";
   board.appendChild(bsub);
-  board.appendChild(timeAxis(plan.makespan));
+
+  const sb = scroller(plan.makespan);
+  const head = el("div", "playhead");
+  head.style.display = "none";
+  sb.track.appendChild(head);
 
   for (const p2 of state.players) {
     const mine = plan.slots.filter(s2 => s2.player.id === p2.id);
     if (!mine.length) continue;
 
     const group = el("div", "player-group");
-    const head = el("div", "plan-head");
+    const ph = el("div", "plan-head");
     const cut = Math.round(reduction(p2.qf || 0) * 100);
-    head.innerHTML =
+    ph.innerHTML =
       `<h4>${p2.name || "unnamed"}</h4>` +
       `<span class="chip">${p2.qf ? "Quick Forge " + p2.qf : "no Quick Forge"}</span>` +
       (state.cole ? '<span class="chip cole">Cole +25%</span>' : "") +
       `<span class="chip cut">${cut}% faster</span>` +
       `<span class="chip">${mine.length} slot${mine.length === 1 ? "" : "s"}</span>`;
-    group.appendChild(head);
+    group.appendChild(ph);
 
     for (const slot of mine) {
       const row = el("div", "slot-row" + (slot === hottest ? " hot" : ""));
@@ -933,14 +1063,45 @@ function renderPlan() {
       row.appendChild(time);
       group.appendChild(row);
     }
-    board.appendChild(group);
+    sb.track.appendChild(group);
   }
+  board.appendChild(sb.wrap);
+
+  const readout = el("div", "scrub-out");
+  readout.id = "scrubOut";
+  board.appendChild(readout);
   host.appendChild(board);
+
+  /* scrubbing */
+  const posFor = e => {
+    const anyBar = sb.track.querySelector(".timeline");
+    if (!anyBar) return null;
+    const box = anyBar.getBoundingClientRect();
+    const f = (e.clientX - box.left) / box.width;
+    return Math.min(1, Math.max(0, f)) * plan.makespan;
+  };
+  sb.wrap.addEventListener("mousemove", e => {
+    if (scrubLocked) return;
+    scrubAt = posFor(e);
+    renderScrub();
+  });
+  sb.wrap.addEventListener("mouseleave", () => {
+    if (scrubLocked) return;
+    scrubAt = null;
+    renderScrub();
+  });
+  sb.wrap.addEventListener("click", e => {
+    if (scrubLocked) { scrubLocked = false; scrubAt = posFor(e); }
+    else { scrubAt = posFor(e); scrubLocked = true; }
+    renderScrub();
+  });
 
   const note = el("p", "card-sub");
   note.style.marginTop = "10px";
-  note.textContent = "Each run holds one slot for its whole length and can't start before the parts it eats are finished. Runs of the same item still go in parallel, so a gap in one slot usually means it's waiting on something else.";
+  note.textContent = "Each run holds one slot for its whole length and can't start before the parts it eats are finished. Runs of the same item still go in parallel.";
   host.appendChild(note);
+
+  renderScrub();
 }
 
 function render() {
@@ -1061,7 +1222,7 @@ const snapshot = () => ({
   build: state.build, open: [...state.open], prices: state.prices, times: state.times,
   manual: [...state.manual], players: state.players, assign: state.assign,
   cole: state.cole, sell: state.sell, tax: state.tax, autoPrice: state.autoPrice,
-  sortBuy: state.sortBuy, sortForge: state.sortForge,
+  sortBuy: state.sortBuy, sortForge: state.sortForge, zoom: state.zoom,
 });
 
 function save() {
@@ -1083,6 +1244,7 @@ function load() {
     state.autoPrice = s.autoPrice !== false;
     state.sortBuy = s.sortBuy || state.sortBuy;
     state.sortForge = s.sortForge || state.sortForge;
+    state.zoom = s.zoom || 1;
     state.cole = !!s.cole;
     state.sell = s.sell || {};
     state.tax = s.tax ?? 2.5;
