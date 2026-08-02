@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Forge Planner</title>
+<link rel="stylesheet" href="/styles.css">
+<link rel="icon" href="data:,">
+</head>
+<body>
+
+<header class="masthead">
+  <div class="inner">
+    <div class="brand">
+      <span class="anvil" aria-hidden="true"></span>
+      <div>
+        <h1>Forge Planner</h1>
+        <p>Work out what a build costs and how long the forge will be busy.</p>
+      </div>
+    </div>
+    <div class="scoreboard" id="scoreboard"></div>
+  </div>
+</header>
+
+<main class="page">
+
+  <!-- STEP 1 ------------------------------------------------------------- -->
+  <section class="step">
+    <div class="step-head">
+      <span class="step-n">1</span>
+      <div>
+        <h2>Pick what you're making</h2>
+        <p>Search any forgeable item. Add as many as you like.</p>
+      </div>
+    </div>
+    <div class="searchbox">
+      <input type="text" id="search" placeholder="Try “drill”, “plate”, “fuel tank”, “perfect”" autocomplete="off" aria-label="Search forgeable items">
+      <div class="results" id="results" hidden role="listbox"></div>
+    </div>
+  </section>
+
+  <!-- STEP 2 ------------------------------------------------------------- -->
+  <section class="step">
+    <div class="step-head">
+      <span class="step-n">2</span>
+      <div>
+        <h2>Decide what to forge and what to buy</h2>
+        <p>Open an arrow to make that part yourself. Leave it closed and you'll just buy it.</p>
+      </div>
+    </div>
+
+    <div class="legend">
+      <span><i class="dot buy"></i> Buying — you pay the price shown</span>
+      <span><i class="dot forge"></i> Forging — you pay for its parts and wait</span>
+    </div>
+
+    <div class="card">
+      <div class="tree-head">
+        <span>Item</span><span>How many</span><span>Price each</span><span>Cost</span><span>Each forge</span><span></span>
+      </div>
+      <div id="tree"></div>
+    </div>
+  </section>
+
+  <!-- STEP 3 ------------------------------------------------------------- -->
+  <section class="step">
+    <div class="step-head">
+      <span class="step-n">3</span>
+      <div>
+        <h2>Fill in prices</h2>
+        <p>Pull live Bazaar prices, or type your own into the table above.</p>
+      </div>
+    </div>
+    <div class="card row-controls">
+      <button id="fetchBz" class="primary">Get Bazaar prices</button>
+      <label class="field">
+        <span>Buying by</span>
+        <select id="bzMode">
+          <option value="buy">Insta-buy (instant, dearer)</option>
+          <option value="sell">Buy order (cheaper, slower)</option>
+        </select>
+      </label>
+      <p class="status" id="bzStatus">Auction-only items like drills and engines always stay manual.</p>
+    </div>
+  </section>
+
+  <!-- STEP 4 ------------------------------------------------------------- -->
+  <section class="step">
+    <div class="step-head">
+      <span class="step-n">4</span>
+      <div>
+        <h2>Say who's forging</h2>
+        <p>Each person's Quick Forge level and slot count changes how fast the queue clears.</p>
+      </div>
+    </div>
+    <div class="split">
+      <div class="card">
+        <div class="crew-head"><span>Player</span><span>Quick Forge</span><span>Slots</span><span></span></div>
+        <div id="crew"></div>
+        <div class="card-foot">
+          <button id="addPlayer">Add a player</button>
+          <label class="check"><input type="checkbox" id="cole"> Cole is mayor <span class="muted">(−25% more)</span></label>
+        </div>
+      </div>
+      <div class="card">
+        <h3 class="card-title">Forge times</h3>
+        <p class="card-sub">Everything you're currently forging. Type over any of these — <code>18h</code>, <code>1d 6h</code>, <code>30s</code>.</p>
+        <div id="times"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- STEP 5 ------------------------------------------------------------- -->
+  <section class="step">
+    <div class="step-head">
+      <span class="step-n">5</span>
+      <div>
+        <h2>Check the numbers</h2>
+        <p>Enter what the finished item sells for to see whether it's worth the wait.</p>
+      </div>
+    </div>
+    <div class="split">
+      <div class="card">
+        <h3 class="card-title">Selling</h3>
+        <div class="row-controls tight">
+          <label class="field grow"><span>Lowest BIN</span><input type="number" id="bin" placeholder="0" min="0"></label>
+          <label class="field"><span>AH tax %</span><input type="number" id="tax" value="2.5" min="0" max="100" step="0.1"></label>
+        </div>
+        <div id="profitStats" class="stats"></div>
+      </div>
+      <div class="card">
+        <h3 class="card-title">Timing</h3>
+        <div id="timeStats" class="stats"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- STEP 6 ------------------------------------------------------------- -->
+  <section class="step">
+    <div class="step-head">
+      <span class="step-n">6</span>
+      <div>
+        <h2>Go shopping</h2>
+        <p>Everything you chose to buy rather than forge.</p>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-bar">
+        <h3 class="card-title">Shopping list</h3>
+        <button id="copyTsv">Copy for Sheets</button>
+      </div>
+      <div id="shopping"></div>
+    </div>
+  </section>
+
+</main>
+
+<footer class="foot">
+  <p>Recipe data is checked against the Hypixel wiki. If a forge time drifts, correct it in step 4 — nothing else needs changing.</p>
+</footer>
+
+<script src="/app.js"></script>
+</body>
+</html>
