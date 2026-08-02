@@ -4,18 +4,24 @@
 --------------------------------------------------------------------------- */
 "use strict";
 
-let RECIPES = {}, CATEGORIES = [], BAZAAR = new Set();
+let RECIPES = {}, CATEGORIES = [], BAZAAR = new Set(), AUCTION = new Set(), AUCTION_TAGS = {};
 
 const state = {
   build: [],          // [{item, qty}]
   open: new Set(),    // paths of the rows you've opened, e.g. "#0|Mithril Plate"
   prices: {},         // item -> coins each
+  manual: new Set(),  // items whose price you typed yourself
   times: {},          // item -> corrected forge seconds
-  players: [{ name: "You", qf: 20, slots: 5 }],
+  players: [{ id: 1, name: "You", qf: 20, slots: 5 }],
+  assign: {},         // item -> player id, or absent for "anyone"
   cole: false,
   bin: 0,
   tax: 2.5,
+  sortBuy: { key: "total", dir: -1 },
+  sortForge: { key: "real", dir: -1 },
+  autoPrice: true,
 };
+let nextPlayerId = 2;
 
 const $ = id => document.getElementById(id);
 const el = (tag, cls) => { const n = document.createElement(tag); if (cls) n.className = cls; return n; };
@@ -61,12 +67,17 @@ function walk(item, qty, path, acc) {
     return;
   }
   const runs = Math.ceil(qty / (r.out || 1));
-  if (!r.craft) { acc.forgeSeconds += runs * forgeTime(item); acc.processes += runs; acc.used.add(item); }
+  if (!r.craft) {
+    acc.forgeSeconds += runs * forgeTime(item);
+    acc.processes += runs;
+    acc.used.add(item);
+    acc.runsPer[item] = (acc.runsPer[item] || 0) + runs;
+  }
   if (r.coins) acc.coins += runs * r.coins;
   for (const [ing, n] of r.ing) walk(ing, runs * n, path + "|" + ing, acc);
 }
 
-const blank = () => ({ buy: {}, forgeSeconds: 0, processes: 0, coins: 0, used: new Set() });
+const blank = () => ({ buy: {}, forgeSeconds: 0, processes: 0, coins: 0, used: new Set(), runsPer: {} });
 
 function compute() {
   const acc = blank();
@@ -98,7 +109,55 @@ function subCost(item, qty, path) {
    everyone has a different perk level. */
 const qfCut = lvl => (lvl > 0 ? Math.min(30, 10 + lvl * 0.5 + Math.floor(lvl / 20) * 10) : 0);
 const reduction = lvl => Math.min(0.9, qfCut(lvl) / 100 + (state.cole ? 0.25 : 0));
-const capacity = () => state.players.reduce((s, p) => s + (p.slots || 0) / (1 - reduction(p.qf || 0)), 0);
+const playerCap = p => (p.slots || 0) / (1 - reduction(p.qf || 0));
+const capacity = () => state.players.reduce((s, p) => s + playerCap(p), 0);
+const playerById = id => state.players.find(p => p.id === id);
+
+/* What the forge actually has to chew through: one entry per forged item. */
+function queueRows() {
+  const acc = compute();
+  const rows = [];
+  for (const [item, runs] of Object.entries(acc.runsPer)) {
+    const each = forgeTime(item);
+    const work = runs * each;                       // base forge seconds
+    const owner = playerById(state.assign[item]);
+    const cap = owner ? playerCap(owner) : capacity();
+    rows.push({
+      item, runs, each, work,
+      real: cap > 0 ? work / cap : Infinity,
+      owner: owner || null,
+    });
+  }
+  return rows;
+}
+
+/* Finish time with assignments respected. Work pinned to a person queues on
+   their slots; the rest spreads over everyone. Level-fill the unassigned work
+   so nobody sits idle while someone else is buried. */
+function finishTime() {
+  const rows = queueRows();
+  const load = new Map(state.players.map(p => [p.id, 0]));
+  let pooled = 0;
+  for (const r of rows) {
+    if (r.owner && load.has(r.owner.id)) load.set(r.owner.id, load.get(r.owner.id) + r.work);
+    else pooled += r.work;
+  }
+  const caps = state.players.map(p => ({ cap: playerCap(p), load: load.get(p.id) || 0 }));
+  const total = caps.reduce((s, c) => s + c.cap, 0);
+  if (!total) return Infinity;
+
+  const soloFinish = c => (c.cap > 0 ? c.load / c.cap : Infinity);
+  let lo = Math.max(0, ...caps.map(soloFinish).filter(isFinite));
+  if (!pooled) return lo;
+  let hi = lo + pooled / total + 1;
+  const spare = T => caps.reduce((s, c) => s + Math.max(0, T * c.cap - c.load), 0);
+  while (spare(hi) < pooled) hi *= 2;
+  for (let i = 0; i < 60; i++) {
+    const mid = (lo + hi) / 2;
+    if (spare(mid) < pooled) lo = mid; else hi = mid;
+  }
+  return hi;
+}
 
 /* ------------------------------------------------------------------ search */
 let matches = [], sel = 0;
@@ -156,15 +215,15 @@ function priceCell(item) {
   if (state.prices[item] != null) input.value = state.prices[item];
   else input.classList.add("unset");
   input.addEventListener("input", () => {
-    if (input.value === "") delete state.prices[item];
-    else state.prices[item] = parseFloat(input.value) || 0;
+    if (input.value === "") { delete state.prices[item]; state.manual.delete(item); }
+    else { state.prices[item] = parseFloat(input.value) || 0; state.manual.add(item); }
     document.querySelectorAll("input[data-price-for]").forEach(o => {
       if (o.dataset.priceFor !== item || o === input) return;
       o.value = state.prices[item] ?? "";
       o.classList.toggle("unset", state.prices[item] == null);
     });
     input.classList.toggle("unset", state.prices[item] == null);
-    refreshNumbers(); renderShopping(); renderStats(); save();
+    refreshNumbers(); renderShopping(); renderQueue(); renderStats(); save();
   });
   wrap.appendChild(input);
   return wrap;
@@ -222,7 +281,7 @@ function buildRow(item, qty, path, depth, rootIdx) {
     qi.type = "number"; qi.min = "1"; qi.value = qty;
     qi.addEventListener("input", () => {
       state.build[rootIdx].qty = Math.max(1, Math.floor(+qi.value || 1));
-      refreshNumbers(); renderShopping(); renderStats(); save();
+      refreshNumbers(); renderShopping(); renderQueue(); renderStats(); save();
     });
     q.appendChild(qi);
   } else {
@@ -345,7 +404,7 @@ function renderCrew() {
 
     const nm = el("input");
     nm.type = "text"; nm.value = p.name; nm.placeholder = "Name";
-    nm.addEventListener("input", () => { p.name = nm.value; save(); });
+    nm.addEventListener("input", () => { p.name = nm.value; renderQueue(); save(); });
 
     const qf = el("select");
     for (let l = 0; l <= 20; l++) {
@@ -355,15 +414,20 @@ function renderCrew() {
       qf.appendChild(o);
     }
     qf.value = p.qf;
-    qf.addEventListener("change", () => { p.qf = +qf.value; renderStats(); save(); });
+    qf.addEventListener("change", () => { p.qf = +qf.value; renderQueue(); renderStats(); save(); });
 
     const slots = el("input");
     slots.type = "number"; slots.min = "0"; slots.max = "7"; slots.value = p.slots;
-    slots.addEventListener("input", () => { p.slots = Math.max(0, +slots.value || 0); renderStats(); save(); });
+    slots.addEventListener("input", () => { p.slots = Math.max(0, +slots.value || 0); renderQueue(); renderStats(); save(); });
 
     const kill = el("button", "x");
     kill.textContent = "\u00d7"; kill.title = "Remove this player";
-    kill.addEventListener("click", () => { state.players.splice(i, 1); renderCrew(); renderStats(); save(); });
+    kill.addEventListener("click", () => {
+      const gone = p.id;
+      state.players.splice(i, 1);
+      for (const [item, id] of Object.entries(state.assign)) if (id === gone) delete state.assign[item];
+      renderCrew(); renderQueue(); renderStats(); save();
+    });
 
     row.append(nm, qf, slots, kill);
     host.appendChild(row);
@@ -390,31 +454,175 @@ function renderTimes() {
       input.classList.remove("bad");
       state.times[item] = secs;
       input.value = dur(secs);
-      refreshNumbers(); renderStats(); save();
+      refreshNumbers(); renderQueue(); renderStats(); save();
     });
     row.append(label, input);
     host.appendChild(row);
   }
 }
 
+/* Both lists share the same sortable-header behaviour. */
+function sortHeader(cols, sortState, onSort) {
+  const tr = document.createElement("tr");
+  for (const c of cols) {
+    const th = document.createElement("th");
+    if (c.key) {
+      th.className = "sortable" + (sortState.key === c.key ? " active" : "");
+      th.tabIndex = 0;
+      th.innerHTML = `${c.label}<span class="arrow">${
+        sortState.key === c.key ? (sortState.dir === -1 ? "\u25be" : "\u25b4") : "\u21c5"}</span>`;
+      const go = () => {
+        if (sortState.key === c.key) sortState.dir *= -1;
+        else { sortState.key = c.key; sortState.dir = -1; }   // new column starts high to low
+        onSort();
+      };
+      th.addEventListener("click", go);
+      th.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); go(); } });
+    } else {
+      th.textContent = c.label;
+    }
+    if (c.right) th.classList.add("r");
+    tr.appendChild(th);
+  }
+  return tr;
+}
+
+function sortRows(rows, { key, dir }) {
+  return rows.slice().sort((a, b) => {
+    const x = a[key], y = b[key];
+    if (typeof x === "string") return dir * x.localeCompare(y);
+    const ax = x == null || !isFinite(x) ? -Infinity : x;
+    const by = y == null || !isFinite(y) ? -Infinity : y;
+    return dir * (ax - by);
+  });
+}
+
 function renderShopping() {
   const acc = compute();
   const host = $("shopping");
-  const rows = Object.entries(acc.buy)
-    .sort((a, b) => ((state.prices[b[0]] || 0) * b[1]) - ((state.prices[a[0]] || 0) * a[1]));
-  if (!rows.length) { host.innerHTML = '<div class="blank">Nothing to buy yet.</div>'; return; }
+  host.innerHTML = "";
 
-  let html = '<table class="buy"><thead><tr><th>Item</th><th>How many</th><th>Price each</th><th>Total</th></tr></thead><tbody>';
-  for (const [item, q] of rows) {
-    const p = state.prices[item];
-    html += `<tr><td>${item}${BAZAAR.has(item) ? "" : ' <span class="tag">auction</span>'}</td>`
-      + `<td>${fmt(q)}</td>`
-      + `<td>${p == null ? '<span style="color:var(--bad)">needs a price</span>' : fmt(p)}</td>`
-      + `<td>${p == null ? "—" : money(p * q)}</td></tr>`;
+  const rows = Object.entries(acc.buy).map(([item, count]) => ({
+    item, count,
+    each: state.prices[item] ?? null,
+    total: state.prices[item] != null ? state.prices[item] * count : null,
+  }));
+
+  if (!rows.length) { host.innerHTML = '<div class="blank">Nothing to buy — you\'re forging all of it.</div>'; return; }
+
+  const table = document.createElement("table");
+  table.className = "grid";
+  const thead = document.createElement("thead");
+  thead.appendChild(sortHeader([
+    { label: "Item", key: "item" },
+    { label: "How many", key: "count", right: true },
+    { label: "Price each", key: "each", right: true },
+    { label: "Total", key: "total", right: true },
+  ], state.sortBuy, renderShopping));
+  table.appendChild(thead);
+
+  const tbody = document.createElement("tbody");
+  for (const r of sortRows(rows, state.sortBuy)) {
+    const tr = document.createElement("tr");
+    tr.innerHTML =
+      `<td>${r.item}${AUCTION.has(r.item) ? ' <span class="tag ah">AH</span>' : ""}</td>` +
+      `<td class="r n">${fmt(r.count)}</td>` +
+      `<td class="r n">${r.each == null ? '<span class="need">no price</span>' : fmt(r.each)}</td>` +
+      `<td class="r n gold">${r.total == null ? "\u2014" : money(r.total)}</td>`;
+    tbody.appendChild(tr);
   }
-  html += `</tbody><tfoot><tr><td>Total</td><td></td><td></td><td>${money(acc.materials)}</td></tr></tfoot></table>`;
-  if (acc.coins) html += `<p class="card-sub" style="margin-top:9px">Plus ${fmt(acc.coins)} coins paid straight into the forge.</p>`;
-  host.innerHTML = html;
+  table.appendChild(tbody);
+
+  const tfoot = document.createElement("tfoot");
+  tfoot.innerHTML = `<tr><td>Total</td><td></td><td></td><td class="r n gold">${money(acc.materials)}</td></tr>`;
+  table.appendChild(tfoot);
+
+  host.appendChild(table);
+  if (acc.coins) {
+    const p = document.createElement("p");
+    p.className = "card-sub";
+    p.style.marginTop = "9px";
+    p.textContent = `Plus ${fmt(acc.coins)} coins paid straight into the forge.`;
+    host.appendChild(p);
+  }
+}
+
+function renderQueue() {
+  const host = $("queue");
+  host.innerHTML = "";
+  const rows = queueRows();
+  if (!rows.length) { host.innerHTML = '<div class="blank">Nothing in the forge — open a row in step 2.</div>'; return; }
+
+  const table = document.createElement("table");
+  table.className = "grid";
+  const thead = document.createElement("thead");
+  thead.appendChild(sortHeader([
+    { label: "Item", key: "item" },
+    { label: "Runs", key: "runs", right: true },
+    { label: "Per run", key: "each", right: true },
+    { label: "All runs", key: "work", right: true },
+    { label: "Real time", key: "real", right: true },
+    { label: "Forged by" },
+  ], state.sortForge, renderQueue));
+  table.appendChild(thead);
+
+  const tbody = document.createElement("tbody");
+  for (const r of sortRows(rows, state.sortForge)) {
+    const tr = document.createElement("tr");
+
+    const name = document.createElement("td");
+    name.textContent = r.item;
+    tr.appendChild(name);
+
+    for (const v of [fmt(r.runs), dur(r.each), dur(r.work)]) {
+      const td = document.createElement("td");
+      td.className = "r n";
+      td.textContent = v;
+      tr.appendChild(td);
+    }
+
+    const real = document.createElement("td");
+    real.className = "r n ember";
+    real.textContent = isFinite(r.real) ? dur(r.real) : "\u2014";
+    real.title = r.owner
+      ? `${r.owner.name}: ${r.owner.slots} slot${r.owner.slots === 1 ? "" : "s"}, ${Math.round(reduction(r.owner.qf) * 100)}% off`
+      : `Shared across all ${state.players.length} of you`;
+    tr.appendChild(real);
+
+    const who = document.createElement("td");
+    const pick = document.createElement("select");
+    pick.className = "who";
+    const any = document.createElement("option");
+    any.value = ""; any.textContent = "Anyone";
+    pick.appendChild(any);
+    for (const p of state.players) {
+      const o = document.createElement("option");
+      o.value = p.id;
+      o.textContent = p.name || "unnamed";
+      pick.appendChild(o);
+    }
+    pick.value = state.assign[r.item] ?? "";
+    pick.addEventListener("change", () => {
+      if (pick.value === "") delete state.assign[r.item];
+      else state.assign[r.item] = +pick.value;
+      renderQueue(); renderStats(); save();
+    });
+    who.appendChild(pick);
+    tr.appendChild(who);
+
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+
+  const totalWork = rows.reduce((s, r) => s + r.work, 0);
+  const tfoot = document.createElement("tfoot");
+  tfoot.innerHTML =
+    `<tr><td>Everything</td><td class="r n">${fmt(rows.reduce((s, r) => s + r.runs, 0))}</td>` +
+    `<td></td><td class="r n">${dur(totalWork)}</td>` +
+    `<td class="r n ember">${dur(finishTime())}</td><td></td></tr>`;
+  table.appendChild(tfoot);
+
+  host.appendChild(table);
 }
 
 const statRow = (k, v, cls = "") => `<div class="s"><span class="k">${k}</span><span class="v ${cls}">${v}</span></div>`;
@@ -422,8 +630,8 @@ const statRow = (k, v, cls = "") => `<div class="s"><span class="k">${k}</span><
 function renderStats() {
   const acc = compute();
   const cap = capacity();
-  const wall = cap > 0 ? acc.forgeSeconds / cap : Infinity;
-  const hours = cap > 0 ? wall / 3600 : 0;
+  const wall = finishTime();
+  const hours = isFinite(wall) ? wall / 3600 : 0;
 
   const bin = state.bin || 0, tax = (state.tax || 0) / 100;
   const afterTax = bin * (1 - tax) - acc.total;
@@ -433,8 +641,8 @@ function renderStats() {
     statRow("Forge runs to queue", fmt(acc.processes)) +
     statRow("Forge time, one slot", dur(acc.forgeSeconds)) +
     statRow("Crew capacity", cap ? cap.toFixed(2) + " slots' worth" : "nobody forging") +
-    statRow("Everything done in", cap ? dur(wall) : "never", "big") +
-    statRow("That's in days", cap ? (wall / 86400).toFixed(2) : "—");
+    statRow("Everything done in", isFinite(wall) ? dur(wall) : "never", "big") +
+    statRow("That's in days", isFinite(wall) ? (wall / 86400).toFixed(2) : "—");
 
   $("profitStats").innerHTML =
     statRow("What it costs you", money(acc.total), "gold") +
@@ -445,36 +653,106 @@ function renderStats() {
 
   $("scoreboard").innerHTML =
     score("Total cost", money(acc.total), "gold") +
-    score("Ready in", cap ? dur(wall) : "—", "ember") +
+    score("Ready in", isFinite(wall) ? dur(wall) : "—", "ember") +
     score("Profit after tax", bin ? money(afterTax) : "—", bin ? (afterTax >= 0 ? "good" : "bad") : "") +
     (acc.missing ? score("Still unpriced", acc.missing + " item" + (acc.missing > 1 ? "s" : ""), "bad") : "");
 }
 const score = (k, v, cls) => `<div class="score"><span class="k">${k}</span><span class="v ${cls}">${v}</span></div>`;
 
 function render() {
-  renderTree(); renderTimes(); renderShopping(); renderStats(); save();
+  renderTree(); renderTimes(); renderShopping(); renderQueue(); renderStats(); save();
+  refreshAuctionPrices();
 }
 
 /* ------------------------------------------------------------------ prices */
-$("fetchBz").addEventListener("click", async () => {
-  const status = $("bzStatus");
-  const btn = $("fetchBz");
-  btn.disabled = true;
-  status.textContent = "Asking the server for Bazaar prices…";
+/* Bazaar is one cheap request, so it refreshes on a timer. Auction lookups
+   cost one request per item at Coflnet, so they only run for items actually
+   on the shopping list, and only when that list changes. */
+let lastAuctionSet = "";
+let auctionBusy = false;
+
+function statusLine(text) { $("bzStatus").textContent = text; }
+
+async function refreshBazaarPrices({ quiet = false } = {}) {
+  if (!quiet) statusLine("Getting Bazaar prices\u2026");
   try {
     const res = await fetch("/api/prices?mode=" + $("bzMode").value);
     const body = await res.json();
     if (!body.ok) throw new Error(body.error || "the Bazaar didn't answer");
     Object.assign(state.prices, body.prices);
-    const n = Object.keys(body.prices).length;
-    status.textContent = `Filled ${n} prices. Auction-only items are marked in the shopping list — set those yourself.`;
-    render();
+    const when = new Date(body.fetchedAt || Date.now()).toLocaleTimeString();
+    statusLine(`${Object.keys(body.prices).length} Bazaar prices, updated ${when}.`);
+    redrawPrices();
+    return true;
   } catch (err) {
-    status.textContent = "Couldn't get prices: " + err.message + ". Type them in by hand, or try again in a moment.";
-  } finally {
-    btn.disabled = false;
+    statusLine("Bazaar prices failed: " + err.message + ". Type prices in by hand or try again.");
+    return false;
   }
+}
+
+/* Which auction-only items does the current plan actually need? */
+function neededAuctionItems() {
+  return Object.keys(compute().buy).filter(i => AUCTION.has(i));
+}
+
+async function refreshAuctionPrices({ force = false } = {}) {
+  const items = neededAuctionItems();
+  const key = items.slice().sort().join("|");
+  if (!items.length) { lastAuctionSet = ""; return; }
+  if (auctionBusy || (!force && key === lastAuctionSet)) return;
+  auctionBusy = true;
+  lastAuctionSet = key;
+  try {
+    const res = await fetch("/api/auction?items=" + encodeURIComponent(items.join(",")));
+    const body = await res.json();
+    if (!body.ok) throw new Error(body.error || "no answer");
+    /* Never stomp on a price you typed in yourself. */
+    for (const [item, price] of Object.entries(body.prices))
+      if (!state.manual.has(item)) state.prices[item] = price;
+    redrawPrices();
+    if (body.failed && body.failed.length)
+      statusLine(`No auction listing found for ${body.failed.join(", ")} — set those yourself.`);
+  } catch (err) {
+    statusLine("Auction prices failed: " + err.message);
+    lastAuctionSet = "";
+  } finally {
+    auctionBusy = false;
+  }
+}
+
+/* Repaint everything that shows a price without rebuilding the tree. */
+function redrawPrices() {
+  document.querySelectorAll("input[data-price-for]").forEach(input => {
+    const item = input.dataset.priceFor;
+    if (document.activeElement === input) return;
+    input.value = state.prices[item] ?? "";
+    input.classList.toggle("unset", state.prices[item] == null);
+  });
+  refreshNumbers(); renderShopping(); renderStats(); save();
+}
+
+$("fetchBz").addEventListener("click", async () => {
+  const btn = $("fetchBz");
+  btn.disabled = true;
+  await refreshBazaarPrices();
+  await refreshAuctionPrices({ force: true });
+  btn.disabled = false;
 });
+
+$("bzMode").addEventListener("change", () => refreshBazaarPrices());
+
+$("autoPrice").addEventListener("change", e => {
+  state.autoPrice = e.target.checked;
+  save();
+});
+
+setInterval(() => {
+  if (state.autoPrice && !document.hidden) refreshBazaarPrices({ quiet: true });
+}, 60_000);
+
+setInterval(() => {
+  if (state.autoPrice && !document.hidden) refreshAuctionPrices({ force: true });
+}, 600_000);
 
 /* ------------------------------------------------------------------ export */
 $("copyTsv").addEventListener("click", () => {
@@ -496,7 +774,9 @@ $("copyTsv").addEventListener("click", () => {
 const KEY = "forge-planner";
 const snapshot = () => ({
   build: state.build, open: [...state.open], prices: state.prices, times: state.times,
-  players: state.players, cole: state.cole, bin: state.bin, tax: state.tax,
+  manual: [...state.manual], players: state.players, assign: state.assign,
+  cole: state.cole, bin: state.bin, tax: state.tax, autoPrice: state.autoPrice,
+  sortBuy: state.sortBuy, sortForge: state.sortForge,
 });
 
 function save() {
@@ -511,7 +791,13 @@ function load() {
     state.open = new Set(s.open || []);
     state.prices = s.prices || {};
     state.times = s.times || {};
-    state.players = s.players || [];
+    state.manual = new Set(s.manual || []);
+    state.players = (s.players || []).map((p, i) => ({ ...p, id: p.id ?? i + 1 }));
+    nextPlayerId = state.players.reduce((m, p) => Math.max(m, p.id), 0) + 1;
+    state.assign = s.assign || {};
+    state.autoPrice = s.autoPrice !== false;
+    state.sortBuy = s.sortBuy || state.sortBuy;
+    state.sortForge = s.sortForge || state.sortForge;
     state.cole = !!s.cole;
     state.bin = s.bin || 0;
     state.tax = s.tax ?? 2.5;
@@ -540,10 +826,10 @@ document.addEventListener("click", e => {
 });
 
 $("addPlayer").addEventListener("click", () => {
-  state.players.push({ name: "Coop " + state.players.length, qf: 0, slots: 5 });
-  renderCrew(); renderStats(); save();
+  state.players.push({ id: nextPlayerId++, name: "Coop " + state.players.length, qf: 0, slots: 5 });
+  renderCrew(); renderQueue(); renderStats(); save();
 });
-$("cole").addEventListener("change", e => { state.cole = e.target.checked; renderStats(); save(); });
+$("cole").addEventListener("change", e => { state.cole = e.target.checked; renderQueue(); renderStats(); save(); });
 $("bin").addEventListener("input", e => { state.bin = parseFloat(e.target.value) || 0; renderStats(); save(); });
 $("tax").addEventListener("input", e => { state.tax = parseFloat(e.target.value) || 0; renderStats(); save(); });
 
@@ -554,6 +840,8 @@ $("tax").addEventListener("input", e => { state.tax = parseFloat(e.target.value)
     RECIPES = body.recipes;
     CATEGORIES = body.categories || [];
     BAZAAR = new Set(body.bazaar || []);
+    AUCTION = new Set(body.auction || []);
+    AUCTION_TAGS = body.auctionTags || {};
   } catch (err) {
     $("tree").innerHTML = '<div class="blank">Couldn\'t load the recipe list from the server. Refresh the page.</div>';
     return;
@@ -562,6 +850,9 @@ $("tax").addEventListener("input", e => { state.tax = parseFloat(e.target.value)
   $("cole").checked = state.cole;
   $("bin").value = state.bin || "";
   $("tax").value = state.tax;
+  $("autoPrice").checked = state.autoPrice;
   renderCrew();
   render();
+  await refreshBazaarPrices();
+  await refreshAuctionPrices({ force: true });
 })();

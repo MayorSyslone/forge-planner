@@ -27,11 +27,18 @@ sends it to the browser at load, so a change there shows up everywhere.
 
 | Route | What it does |
 |---|---|
-| `GET /api/recipes` | Recipes, categories, and which items the Bazaar sells |
+| `GET /api/recipes` | Recipes, categories, and which items come from the Bazaar or the auction house |
 | `GET /api/prices?mode=buy` | Bazaar prices keyed by item name. `mode=sell` gives buy-order prices instead |
+| `GET /api/auction?items=A,B` | Lowest-BIN prices for auction-only items, via Coflnet |
 | `GET /api/health` | Returns `{"ok":true}` — Render pings this |
 
-Bazaar responses are cached for a minute so refreshing doesn't hammer Hypixel.
+Bazaar is one request to Hypixel, cached for a minute. Auction prices cost one
+Coflnet request per item, so they run one at a time with a gap between them and
+are cached for ten minutes — comfortably inside Coflnet's 30-per-10-seconds and
+100-per-minute limits. Only items actually on your shopping list get looked up.
+
+Auction price data comes from [SkyCofl](https://sky.coflnet.com/data), who ask
+to be credited — that's the link in the page footer. Leave it there.
 
 ## Running it locally
 
@@ -69,6 +76,12 @@ them. Rows go as deep as you want — all the way down to raw Mithril if you lik
 Step 4 handles a coop properly. Give each person their own Quick Forge level and
 slot count; the finish time accounts for the fact that a maxed player's slots
 clear work faster than an unperked player's.
+
+Step 6 has two live lists, both sortable by any column. **Buy** is everything
+you aren't forging. **Forge** is every run the forge has to do, with a "Forged
+by" column — assign a job to one person and it queues on their slots alone, at
+their Quick Forge rate. Anything left on "Anyone" spreads across the crew, and
+the finish time is worked out so nobody sits idle while someone else is buried.
 
 ## About the data
 

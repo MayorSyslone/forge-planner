@@ -108,4 +108,28 @@ for (const g of GEMS) {
 
 const CATEGORY_ORDER = ["Drills","Engines","Fuel tanks","Components","Refining","Gemstones"];
 
-module.exports = { RECIPES, BAZAAR_IDS, CATEGORY_ORDER };
+/* Auction-house item tags, looked up through Coflnet's lowest-BIN endpoint.
+   Anything the Bazaar already covers is not repeated here. A tag that returns
+   nothing just leaves that price blank for you to fill in. */
+const AUCTION_IDS = {
+  "Mithril Drill SX-R226":"MITHRIL_DRILL_1",
+  "Mithril Drill SX-R326":"MITHRIL_DRILL_2",
+  "Titanium Drill DR-X355":"TITANIUM_DRILL_1",
+  "Titanium Drill DR-X455":"TITANIUM_DRILL_2",
+  "Titanium Drill DR-X555":"TITANIUM_DRILL_3",
+  "Titanium Drill DR-X655":"TITANIUM_DRILL_4",
+  "Divan's Drill":"DIVAN_DRILL",
+  "Divan's Alloy":"DIVAN_ALLOY",
+  "Mithril-Infused Fuel Tank":"MITHRIL_INFUSED_FUEL_TANK",
+  "Titanium-Infused Fuel Tank":"TITANIUM_INFUSED_FUEL_TANK",
+  "Gemstone Fuel Tank":"GEMSTONE_FUEL_TANK",
+  "Perfectly-Cut Fuel Tank":"PERFECTLY_CUT_FUEL_TANK",
+  "Mithril-Plated Drill Engine":"MITHRIL_PLATED_DRILL_ENGINE",
+  "Titanium-Plated Drill Engine":"TITANIUM_PLATED_DRILL_ENGINE",
+  "Ruby-Polished Drill Engine":"RUBY_POLISHED_DRILL_ENGINE",
+  "Sapphire-Polished Drill Engine":"SAPPHIRE_POLISHED_DRILL_ENGINE",
+  "Amber-Polished Drill Engine":"AMBER_POLISHED_DRILL_ENGINE",
+};
+for (const g of GEMS) AUCTION_IDS[`${g} Crystal`] = `${g.toUpperCase()}_CRYSTAL`;
+
+module.exports = { RECIPES, BAZAAR_IDS, AUCTION_IDS, CATEGORY_ORDER };

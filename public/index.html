@@ -67,12 +67,12 @@
     <div class="step-head">
       <span class="step-n">3</span>
       <div>
-        <h2>Fill in prices</h2>
-        <p>Pull live Bazaar prices, or type your own into the table above.</p>
+        <h2>Prices</h2>
+        <p>Bazaar items price themselves. Auction items use the lowest BIN. Type over anything you disagree with.</p>
       </div>
     </div>
     <div class="card row-controls">
-      <button id="fetchBz" class="primary">Get Bazaar prices</button>
+      <button id="fetchBz" class="primary">Refresh prices now</button>
       <label class="field">
         <span>Buying by</span>
         <select id="bzMode">
@@ -80,7 +80,8 @@
           <option value="sell">Buy order (cheaper, slower)</option>
         </select>
       </label>
-      <p class="status" id="bzStatus">Auction-only items like drills and engines always stay manual.</p>
+      <label class="check"><input type="checkbox" id="autoPrice" checked> Keep prices live</label>
+      <p class="status" id="bzStatus">Loading prices…</p>
     </div>
   </section>
 
@@ -140,22 +141,38 @@
     <div class="step-head">
       <span class="step-n">6</span>
       <div>
-        <h2>Go shopping</h2>
-        <p>Everything you chose to buy rather than forge.</p>
+        <h2>The two lists</h2>
+        <p>Both update as you open and close rows above. Click any column heading to sort by it.</p>
       </div>
     </div>
-    <div class="card">
-      <div class="card-bar">
-        <h3 class="card-title">Shopping list</h3>
-        <button id="copyTsv">Copy for Sheets</button>
+    <div class="lists">
+      <div class="card">
+        <div class="card-bar">
+          <div>
+            <h3 class="card-title">Buy</h3>
+            <p class="card-sub" style="margin:2px 0 0">Everything you're not forging.</p>
+          </div>
+          <button id="copyTsv">Copy for Sheets</button>
+        </div>
+        <div id="shopping"></div>
       </div>
-      <div id="shopping"></div>
+
+      <div class="card">
+        <div class="card-bar">
+          <div>
+            <h3 class="card-title">Forge</h3>
+            <p class="card-sub" style="margin:2px 0 0">Every run the forge has to do, and who's doing it.</p>
+          </div>
+        </div>
+        <div id="queue"></div>
+      </div>
     </div>
   </section>
 
 </main>
 
 <footer class="foot">
+  <p>Bazaar prices from the Hypixel API. Auction prices provided by <a href="https://sky.coflnet.com/data" target="_blank" rel="noopener">SkyCofl</a>.</p>
   <p>Recipe data is checked against the Hypixel wiki. If a forge time drifts, correct it in step 4 — nothing else needs changing.</p>
 </footer>
 
